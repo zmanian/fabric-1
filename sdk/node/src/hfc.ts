@@ -1754,37 +1754,41 @@ export class TransactionContext extends events.EventEmitter {
         // Compute the hash of the project directory contents
         hash = sdk_util.GenerateDirectoryHash(goPath + "/src/", request.chaincodePath, hash);
         debug("hash: " + hash);
+        let dockerFilePath = projDir + "/Dockerfile";
 
-        // Compose the Dockerfile commands
-     	  let dockerFileContents =
-        "from hyperledger/fabric-baseimage" + "\n" +
-     	  "COPY . $GOPATH/src/build-chaincode/" + "\n" +
-     	  "WORKDIR $GOPATH" + "\n\n" +
-     	  "RUN go install build-chaincode && cp src/build-chaincode/vendor/github.com/hyperledger/fabric/peer/core.yaml $GOPATH/bin && mv $GOPATH/bin/build-chaincode $GOPATH/bin/%s";
+        let docker_file_stat = fs.lstatSync(dockerFilePath)
 
-     	  // Substitute the hashStrHash for the image name
-     	  dockerFileContents = util.format(dockerFileContents, hash);
+        //If no Dockerfile exists for the chaincode, create one.
+        if(!docker_file_stat.isFile()){
+            // Compose the Dockerfile commands
+            let dockerFileContents =
+            "from hyperledger/fabric-baseimage" + "\n" +
+            "COPY . $GOPATH/src/build-chaincode/" + "\n" +
+            "WORKDIR $GOPATH" + "\n\n" +
+            "RUN go install build-chaincode && cp src/build-chaincode/vendor/github.com/hyperledger/fabric/peer/core.yaml $GOPATH/bin && mv $GOPATH/bin/build-chaincode $GOPATH/bin/%s";
 
-        // Add the certificate path on the server, if it is being passed in
-        debug("type of request.certificatePath: " + typeof(request.certificatePath));
-        debug("request.certificatePath: " + request.certificatePath);
-        if (request.certificatePath !== "" && request.certificatePath !== undefined) {
-            debug("Adding COPY certificate.pem command");
+            // Substitute the hashStrHash for the image name
+            dockerFileContents = util.format(dockerFileContents, hash);
 
-            dockerFileContents = dockerFileContents + "\n" + "COPY certificate.pem %s";
-            dockerFileContents = util.format(dockerFileContents, request.certificatePath);
-        }
+            // Add the certificate path on the server, if it is being passed in
+            debug("type of request.certificatePath: " + typeof(request.certificatePath));
+            debug("request.certificatePath: " + request.certificatePath);
+            if (request.certificatePath !== "" && request.certificatePath !== undefined) {
+                debug("Adding COPY certificate.pem command");
 
-     	  // Create a Docker file with dockerFileContents
-     	  let dockerFilePath = projDir + "/Dockerfile";
-     	  fs.writeFile(dockerFilePath, dockerFileContents, function(err) {
-            if (err) {
-                debug(util.format("Error writing file [%s]: %s", dockerFilePath, err));
-                return cb(Error(util.format("Error writing file [%s]: %s", dockerFilePath, err)));
+                dockerFileContents = dockerFileContents + "\n" + "COPY certificate.pem %s";
+                dockerFileContents = util.format(dockerFileContents, request.certificatePath);
             }
 
-            debug("Created Dockerfile at [%s]", dockerFilePath);
+            // Create a Docker file with dockerFileContents
+            fs.writeFile(dockerFilePath, dockerFileContents, function(err) {
+                if (err) {
+                    debug(util.format("Error writing file [%s]: %s", dockerFilePath, err));
+                    return cb(Error(util.format("Error writing file [%s]: %s", dockerFilePath, err)));
+                }
 
+                debug("Created Dockerfile at [%s]", dockerFilePath);
+}
             // Create the .tar.gz file of the chaincode package
             let targzFilePath = "/tmp/deployment-package.tar.gz";
             // Create the compressed archive
