@@ -1726,11 +1726,187 @@ export class TransactionContext extends events.EventEmitter {
         return cb(null, tx);
     }
 
+    private newWithoutDockerfileNetModeTransactions(request:DeployRequest, isBuildRequest:boolean, cb:DeployTransactionCallback){
+        debug("newWithoutDockerfileNetModeTransactions");
+
+        let self = this;
+
+        // Verify that chaincodePath is being passed
+        if (!request.chaincodePath || request.chaincodePath === "") {
+          return cb(Error("missing chaincodePath in DeployRequest"));
+        }
+
+        // Determine the user's $GOPATH
+        let goPath =  process.env['GOPATH'];
+        debug("$GOPATH: " + goPath);
+
+        // Compose the path to the chaincode project directory
+        let projDir = goPath + "/src/" + request.chaincodePath;
+        debug("projDir: " + projDir);
+
+        // Compute the hash of the chaincode deployment parameters
+        let hash = sdk_util.GenerateParameterHash(request.chaincodePath, request.fcn, request.args);
+
+        // Compute the hash of the project directory contents
+        hash = sdk_util.GenerateDirectoryHash(goPath + "/src/", request.chaincodePath, hash);
+        debug("hash: " + hash);
+
+
+            let targzFilePath = "/tmp/deployment-package.tar.gz";
+            // Create the compressed archive
+            sdk_util.GenerateTarGz(projDir, targzFilePath, function(err) {
+                if(err) {
+                    debug(util.format("Error creating deployment archive [%s]: %s", targzFilePath, err));
+                    return cb(Error(util.format("Error creating deployment archive [%s]: %s", targzFilePath, err)));
+                }
+
+                debug(util.format("Created deployment archive at [%s]", targzFilePath));
+
+                //
+                // Initialize a transaction structure
+                //
+
+                let tx = new _fabricProto.Transaction();
+
+                //
+                // Set the transaction type
+                //
+
+                if (isBuildRequest) {
+                    tx.setType(_fabricProto.Transaction.Type.CHAINCODE_BUILD);
+                } else {
+                    tx.setType(_fabricProto.Transaction.Type.CHAINCODE_DEPLOY);
+                }
+
+                //
+                // Set the chaincodeID
+                //
+
+                let chaincodeID = new _chaincodeProto.ChaincodeID();
+                chaincodeID.setName(hash);
+                debug("chaincodeID: " + JSON.stringify(chaincodeID));
+                tx.setChaincodeID(chaincodeID.toBuffer());
+
+                //
+                // Set the payload
+                //
+
+                // Construct the ChaincodeSpec
+                let chaincodeSpec = new _chaincodeProto.ChaincodeSpec();
+
+                // Set Type -- GOLANG is the only chaincode language supported at this time
+                chaincodeSpec.setType(_chaincodeProto.ChaincodeSpec.Type.GOLANG);
+                // Set chaincodeID
+                chaincodeSpec.setChaincodeID(chaincodeID);
+                // Set ctorMsg
+                let chaincodeInput = new _chaincodeProto.ChaincodeInput();
+                chaincodeInput.setArgs(prepend(request.fcn, request.args));
+                chaincodeSpec.setCtorMsg(chaincodeInput);
+                debug("chaincodeSpec: " + JSON.stringify(chaincodeSpec));
+
+                // Construct the ChaincodeDeploymentSpec and set it as the Transaction payload
+                let chaincodeDeploymentSpec = new _chaincodeProto.ChaincodeDeploymentSpec();
+                chaincodeDeploymentSpec.setChaincodeSpec(chaincodeSpec);
+
+                // Read in the .tar.zg and set it as the CodePackage in ChaincodeDeploymentSpec
+                fs.readFile(targzFilePath, function(err, data) {
+                    if(err) {
+                        debug(util.format("Error reading deployment archive [%s]: %s", targzFilePath, err));
+                        return cb(Error(util.format("Error reading deployment archive [%s]: %s", targzFilePath, err)));
+                    }
+
+                    debug(util.format("Read in deployment archive from [%s]", targzFilePath));
+
+                    chaincodeDeploymentSpec.setCodePackage(data);
+                    tx.setPayload(chaincodeDeploymentSpec.toBuffer());
+
+                    //
+                    // Set the transaction ID
+                    //
+
+                    tx.setTxid(hash);
+
+                    //
+                    // Set the transaction timestamp
+                    //
+
+                    tx.setTimestamp(sdk_util.GenerateTimestamp());
+
+                    //
+                    // Set confidentiality level
+                    //
+
+                    if (request.confidential) {
+                        debug("Set confidentiality level to CONFIDENTIAL");
+                        tx.setConfidentialityLevel(_fabricProto.ConfidentialityLevel.CONFIDENTIAL);
+                    } else {
+                        debug("Set confidentiality level to PUBLIC");
+                        tx.setConfidentialityLevel(_fabricProto.ConfidentialityLevel.PUBLIC);
+                    }
+
+                    //
+                    // Set request metadata
+                    //
+
+                    if (request.metadata) {
+                        tx.setMetadata(request.metadata);
+                    }
+
+                    //
+                    // Set the user certificate data
+                    //
+
+                    if (request.userCert) {
+                        // cert based
+                        let certRaw = new Buffer(self.tcert.publicKey);
+                        // debug('========== Invoker Cert [%s]', certRaw.toString('hex'));
+                        let nonceRaw = new Buffer(self.nonce);
+                        let bindingMsg = Buffer.concat([certRaw, nonceRaw]);
+                        // debug('========== Binding Msg [%s]', bindingMsg.toString('hex'));
+                        self.binding = new Buffer(self.chain.cryptoPrimitives.hash(bindingMsg), 'hex');
+                        // debug('========== Binding [%s]', self.binding.toString('hex'));
+                        let ctor = chaincodeSpec.getCtorMsg().toBuffer();
+                        // debug('========== Ctor [%s]', ctor.toString('hex'));
+                        let txmsg = Buffer.concat([ctor, self.binding]);
+                        // debug('========== Payload||binding [%s]', txmsg.toString('hex'));
+                        let mdsig = self.chain.cryptoPrimitives.ecdsaSign(request.userCert.privateKey.getPrivate('hex'), txmsg);
+                        let sigma = new Buffer(mdsig.toDER());
+                        // debug('========== Sigma [%s]', sigma.toString('hex'));
+                        tx.setMetadata(sigma);
+                    }
+                    fs.unlink(targzFilePath, function(err) {
+                        if(err) {
+                            debug(util.format("Error deleting temporary archive [%s]: %s", targzFilePath, err));
+                            return cb(Error(util.format("Error deleting temporary archive [%s]: %s", targzFilePath, err)));
+                        }
+
+                        debug("Temporary archive deleted successfully ---> " + targzFilePath);
+                    }); // end delete .tar.gz
+                });// end reading .tar.zg and composing transaction
+            });// end writing .tar.gz
+    }
+
+    private newNetModeTransaction(request:DeployRequest, isBuildRequest:boolean, cb:DeployTransactionCallback):void {
+    fs.readFile(filename,'utf8', function(err,data){
+        if (!err){
+            debug("Dockerfile found");
+            this.newWithoutDockerfileNetModeTransactions(request,isBuildRequest,cb);
+        }
+        else{
+            debug("Dockerfile not found");
+            this.newDockerfileNetModeTransaction(request,isBuildRequest,cb);
+        }
+    })    
+
+    }
+
+
     /**
      * Create a network mode deploy transaction.
      * @param request {Object} A network mode BuildRequest or DeployRequest
      */
-    private newNetModeTransaction(request:DeployRequest, isBuildRequest:boolean, cb:DeployTransactionCallback):void {
+
+    private newDockerfileNetModeTransaction(request:DeployRequest, isBuildRequest:boolean, cb:DeployTransactionCallback):void {
         debug("newNetModeTransaction");
 
         let self = this;
