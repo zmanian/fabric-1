@@ -1887,17 +1887,31 @@ export class TransactionContext extends events.EventEmitter {
     }
 
     private newNetModeTransaction(request:DeployRequest, isBuildRequest:boolean, cb:DeployTransactionCallback):void {
-    fs.readFile(filename,'utf8', function(err,data){
-        if (!err){
-            debug("Dockerfile found");
-            this.newWithoutDockerfileNetModeTransactions(request,isBuildRequest,cb);
-        }
-        else{
-            debug("Dockerfile not found");
-            this.newDockerfileNetModeTransaction(request,isBuildRequest,cb);
-        }
-    })    
+    
 
+        // Determine the user's $GOPATH
+        let goPath =  process.env['GOPATH'];
+        debug("$GOPATH: " + goPath);
+
+        // Compose the path to the chaincode project directory
+        let projDir = goPath + "/src/" + request.chaincodePath;
+        debug("projDir: " + projDir);
+     	
+         
+        let dockerFilePath = projDir + "/Dockerfile";
+
+    
+    
+        fs.readFile(dockerFilePath,'utf8', function(err,data){
+            if (!err){
+                debug("Dockerfile found");
+                this.newWithoutDockerfileNetModeTransactions(request,isBuildRequest,cb);
+            }
+            else{
+                debug("Dockerfile not found");
+                this.newDockerfileNetModeTransaction(request,isBuildRequest,cb);
+            }
+        });    
     }
 
 
