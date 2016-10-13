@@ -1888,7 +1888,7 @@ export class TransactionContext extends events.EventEmitter {
 
     private newNetModeTransaction(request:DeployRequest, isBuildRequest:boolean, cb:DeployTransactionCallback):void {
     
-
+        let self= this;
         // Determine the user's $GOPATH
         let goPath =  process.env['GOPATH'];
         debug("$GOPATH: " + goPath);
@@ -1905,11 +1905,11 @@ export class TransactionContext extends events.EventEmitter {
         fs.readFile(dockerFilePath,'utf8', function(err,data){
             if (!err){
                 debug("Dockerfile found");
-                this.newWithoutDockerfileNetModeTransactions(request,isBuildRequest,cb);
+                self.newWithoutDockerfileNetModeTransactions(request,isBuildRequest,cb);
             }
             else{
                 debug("Dockerfile not found");
-                this.newDockerfileNetModeTransaction(request,isBuildRequest,cb);
+                self.newDockerfileNetModeTransaction(request,isBuildRequest,cb);
             }
         });    
     }
